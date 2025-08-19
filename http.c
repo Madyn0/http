@@ -1,11 +1,20 @@
 #include <arpa/inet.h>
 #include <netinet/in.h>
+#include <signal.h>
 #include <stdio.h>
 #include <unistd.h>
 
-#define PORT      9191
-#define BACKLOG   1
-#define BUFF_SIZE 1024
+#define SERVER_PORT     9191
+#define MAX_CONNECTIONS 1
+#define READ_BUF_SIZE   1024
+
+static volatile sig_atomic_t stop;
+
+void handle_sigint(int sig)
+{
+    (void)sig;
+    stop = 1;
+}
 
 static int init_server()
 {
@@ -14,99 +23,105 @@ static int init_server()
     int opt                 = 1;
 
     sfd = socket(AF_INET, SOCK_STREAM, 0);
-    if (sfd == -1)
-        return -1;
+    if (sfd == -1) {
+        perror("socket");
+        goto out;
+    }
 
     addr.sin_family      = AF_INET;
-    addr.sin_port        = htons(PORT);
+    addr.sin_port        = htons(SERVER_PORT);
     addr.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
 
     if (setsockopt(sfd, SOL_SOCKET, SO_REUSEADDR, &opt, sizeof(opt)) == -1) {
         perror("setsockopt");
-        goto fail;
+        goto out;
     }
 
     if (bind(sfd, (struct sockaddr *)&addr, sizeof(addr)) == -1) {
         perror("bind");
-        goto fail;
+        goto out;
     }
 
-    if (listen(sfd, BACKLOG) == -1) {
+    if (listen(sfd, MAX_CONNECTIONS) == -1) {
         perror("listen");
-        goto fail;
+        goto out;
     }
 
-    printf("listening on: 127.0.0.1:%d\n", ntohs(addr.sin_port));
+    puts("server started");
+    printf("listening on: 127.0.0.1:%d\n\n", ntohs(addr.sin_port));
     return sfd;
 
-fail:
+out:
     close(sfd);
     return -1;
 }
 
-static void serve_client(int client_fd)
+static int accept_client(int sfd)
+{
+    int cfd;
+    struct sockaddr_in addr = { 0 };
+    socklen_t len           = sizeof(addr);
+
+    cfd = accept(sfd, (struct sockaddr *)&addr, &len);
+    if (cfd == -1) {
+        perror("accept");
+        return -1;
+    }
+
+    /* inet_ntoa is MT-Safe (locale); see man 7 attributes */
+    printf("client connected: %s:%d\n", inet_ntoa(addr.sin_addr),
+           ntohs(addr.sin_port));
+
+    return cfd;
+}
+
+static void serve_client(int cfd)
 {
     for (;;) {
-        char buff[BUFF_SIZE];
-        ssize_t bytes_read, total_written;
+        char buf[READ_BUF_SIZE];
 
-        bytes_read = read(client_fd, buff, sizeof(buff));
-        if (bytes_read <= 0) {
-            if (bytes_read < 0)
+        ssize_t nread = read(cfd, buf, sizeof(buf));
+        if (nread <= 0) {
+            if (nread < 0)
                 perror("read");
             break;
         }
 
-        total_written = 0;
-        while (total_written < bytes_read) {
-            ssize_t just_written;
+        ssize_t written = 0;
+        while (written < nread) {
+            size_t rem  = (size_t)(nread - written);
+            ssize_t ret = write(cfd, buf + written, rem);
 
-            just_written = write(client_fd, buff + total_written,
-                                 bytes_read - total_written);
-            if (just_written == -1) {
+            if (ret == -1) {
                 perror("write");
-                return;
+                break;
             }
 
-            total_written += just_written;
+            written += ret;
         }
     }
 
-    if (close(client_fd) == -1)
-        perror("close client_fd");
-    puts("client disconnected");
+    close(cfd);
+    puts("client disconnected\n");
 }
 
 int main(void)
 {
-    int listen_fd;
+    signal(SIGINT, handle_sigint);
 
-    listen_fd = init_server();
+    int server_fd = init_server();
+    if (server_fd < 0)
+        return 1;
 
-    for (;;) {
-        struct sockaddr_in client_addr = { 0 };
-        socklen_t client_addr_len      = sizeof(client_addr);
-        int client_fd;
-
-        client_fd = accept(listen_fd, (struct sockaddr *)&client_addr,
-                           &client_addr_len);
-        if (client_fd == -1) {
-            perror("accept");
+    while (!stop) {
+        int client_fd = accept_client(server_fd);
+        if (client_fd < 0)
             continue;
-        }
-
-        char client_str[INET_ADDRSTRLEN];
-        inet_ntop(AF_INET, &client_addr.sin_addr, client_str,
-                  sizeof(client_str));
-        printf("client connected: %s:%d\n", client_str,
-               ntohs(client_addr.sin_port));
 
         serve_client(client_fd);
     }
 
-out_close:
-    if (close(listen_fd) == -1)
-        perror("close listen_fd");
-
-    return 1;
+    close(server_fd);
+    puts("server stopped");
+    return 0;
 }
