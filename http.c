@@ -4,8 +4,9 @@
 #include <stdlib.h>
 #include <unistd.h>
 
-#define PORT    9191
-#define BACKLOG 1
+#define PORT      9191
+#define BACKLOG   1
+#define BUFF_SIZE 1024
 
 int main()
 {
@@ -38,21 +39,44 @@ int main()
     printf("listening on: %s:%d\n", inet_ntoa(listen_addr.sin_addr),
            ntohs(listen_addr.sin_port));
 
-    socklen_t client_addr_len = sizeof(client_addr);
-    client_fd =
-        accept(listen_fd, (struct sockaddr *)&client_addr, &client_addr_len);
-    if (client_fd == -1) {
-        perror("accept");
-        close(listen_fd);
-        exit(EXIT_FAILURE);
+    while (1) {
+        socklen_t client_addr_len = sizeof(client_addr);
+        char buff[BUFF_SIZE];
+
+        client_fd = accept(listen_fd, (struct sockaddr *)&client_addr,
+                           &client_addr_len);
+        if (client_fd == -1) {
+            perror("accept");
+            continue;
+        }
+
+        printf("client connected: %s:%d\n", inet_ntoa(client_addr.sin_addr),
+               ntohs(client_addr.sin_port));
+
+        while (1) {
+            ssize_t bytes_read = read(client_fd, buff, sizeof(buff));
+            if (bytes_read <= 0) {
+                if (bytes_read < 0)
+                    perror("read");
+                break;
+            }
+
+            ssize_t total_written = 0;
+            while (total_written < bytes_read) {
+                ssize_t just_written = write(client_fd, buff + total_written,
+                                             bytes_read - total_written);
+                if (just_written == -1) {
+                    perror("write");
+                    break;
+                }
+
+                total_written += just_written;
+            }
+        }
+
+        close(client_fd);
+        puts("client disconnected");
     }
-    printf("client connected: %s:%d\n", inet_ntoa(client_addr.sin_addr),
-           ntohs(client_addr.sin_port));
-
-    write(client_fd, "foobar\n", 7);
-
-    close(client_fd);
-    puts("client disconnected");
 
     close(listen_fd);
     puts("server stopped");
