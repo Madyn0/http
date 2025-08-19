@@ -7,6 +7,43 @@
 #define BACKLOG   1
 #define BUFF_SIZE 1024
 
+static int init_server()
+{
+    int sfd;
+    struct sockaddr_in addr = { 0 };
+    int opt                 = 1;
+
+    sfd = socket(AF_INET, SOCK_STREAM, 0);
+    if (sfd == -1)
+        return -1;
+
+    addr.sin_family      = AF_INET;
+    addr.sin_port        = htons(PORT);
+    addr.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
+
+    if (setsockopt(sfd, SOL_SOCKET, SO_REUSEADDR, &opt, sizeof(opt)) == -1) {
+        perror("setsockopt");
+        goto fail;
+    }
+
+    if (bind(sfd, (struct sockaddr *)&addr, sizeof(addr)) == -1) {
+        perror("bind");
+        goto fail;
+    }
+
+    if (listen(sfd, BACKLOG) == -1) {
+        perror("listen");
+        goto fail;
+    }
+
+    printf("listening on: 127.0.0.1:%d\n", ntohs(addr.sin_port));
+    return sfd;
+
+fail:
+    close(sfd);
+    return -1;
+}
+
 static void serve_client(int client_fd)
 {
     for (;;) {
@@ -43,37 +80,8 @@ static void serve_client(int client_fd)
 int main(void)
 {
     int listen_fd;
-    struct sockaddr_in listen_addr = { 0 };
 
-    listen_fd = socket(AF_INET, SOCK_STREAM, 0);
-    if (listen_fd == -1) {
-        perror("socket");
-        return 1;
-    }
-
-    int opt = 1;
-    if (setsockopt(listen_fd, SOL_SOCKET, SO_REUSEADDR, &opt, sizeof(opt)) ==
-        -1) {
-        perror("setsockopt");
-        goto out_close;
-    }
-
-    listen_addr.sin_family      = AF_INET;
-    listen_addr.sin_port        = htons(PORT);
-    listen_addr.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
-
-    if (bind(listen_fd, (struct sockaddr *)&listen_addr,
-             sizeof(listen_addr)) == -1) {
-        perror("bind");
-        goto out_close;
-    }
-
-    if (listen(listen_fd, BACKLOG) == -1) {
-        perror("listen");
-        goto out_close;
-    }
-
-    printf("listening on: 127.0.0.1:%d\n", ntohs(listen_addr.sin_port));
+    listen_fd = init_server();
 
     for (;;) {
         struct sockaddr_in client_addr = { 0 };
